@@ -21,3 +21,165 @@ This is probably a good point to commit the application so that our code doesn't
 1. `git init`
 2. `git add .`
 3. `git commit`
+
+## Adding a database
+
+Since this is a blog, our posts and comments will need to sit in a database somewhere, in this case a PostgreSQL database. We're going to use [Ecto](https://github.com/elixir-lang/ecto) to interact with the database. We also need to use [Postgrex](https://github.com/ericmj/postgrex) which is used by the Ecto PostgreSQL adapter.
+
+To add dependencies to an Elixir application we use have to update the `mix.exs` file with our dependencies. Since the two packages we are using exist on the [Hex package manager](https://hex.pm) we can simply specify the name of the dependency and it will be fetched from there. The new `deps` function should look like:
+
+```elixir
+defp deps do
+  [
+    {:phoenix, github: "phoenixframework/phoenix"},
+    {:cowboy, "~> 1.0"},
+    {:ecto, "~> 0.2.5"},
+    {:postgrex, "~> 0.6.0"}
+  ]
+end
+```
+
+We can now run `mix do deps.get, compile` to fetch these dependencies and compile them. You will not that the `phoenix` dependency uses a keyword list as its second argument with the key `github` this tells mix to fetch the dependency from the GitHub repository `phoenixframework/phoenix`
+
+### Starting ecto
+
+Even though Ecto and Postgrex have been imported, that doesn't mean that they are running. We need to start them.
+
+TODO: explain the concepts in http://elixir-lang.org/getting_started/mix_otp/5.html#5.2-understanding-applications
+
+In order to start Ecto and Postgrex we need to update the `application` function `mix.exs` to:
+
+```elixir
+  def application do
+    [mod: {Blog, []},
+     applications: [:phoenix, :cowboy, :logger, :postgrex, :ecto]]
+  end
+```
+
+### Configuring the database
+
+Now that we have Ecto available to us, we can generate a repository - Ecto defines this as a wrapper around the database. Ecto comes with a mix task to generate a repository. The list of available mix tasks for a project can be seen by running `mix help`
+
+    gazler@gazler-desktop:~/development/elixir/blog$ mix help
+    mix                    # Run the default task (current: mix run)
+    ...
+    mix ecto.create        # Create the database for the repo
+    mix ecto.drop          # Drop the database for the repo
+    mix ecto.gen.migration # Generates a new migration for the repo
+    mix ecto.gen.repo      # Generates a new repository
+    mix ecto.migrate       # Runs migrations up on a repo
+    mix ecto.rollback      # Reverts migrations down on a repo
+    ...
+    iex -S mix             # Start IEx and run the default task
+
+More information on an individual task can be seen by running `mix help TASKNAME`
+
+    gazler@gary-desktop:~/development/elixir/blog$ mix help ecto.gen.repo
+
+    Generates a new repository.
+    The repository will be placed in the lib directory.
+
+    Examples
+    > mix ecto.gen.repo Repo
+
+Since our application is called `Blog` our repository will be called `Blog.Repo` we can run `mix ecto.gen.repo Blog.Repo` to generate this.
+
+By default, a generated repo expects the `url` function to be filled in by the user to point to the database. Since the location of the database is up to the developer, it should not be dictated by the project. Instead of defining the database url directly in this file, we will allow this to be specified in a config file.
+
+### Testing the database repository
+
+It is important that this works reliably, so we will add some tests to ensure it works as intended. Elixir comes with its own test framework [ExUnit](http://elixir-lang.org/getting_started/mix_otp/1.html#1.3-running-tests).
+
+In order to write some tests, we need to create a file to put them in. The `mix test` task will run all the tests in the `test` directory that end in `_test.exs`. Create the file `test/blog/repo_test.exs` with the following test:
+
+```elixir
+    defmodule Blog.RepoTest do
+      use ExUnit.Case
+
+      test "conf uses application config if defined" do
+        config = [
+          username: "user",
+          password: "pass",
+          hostname: "localhost",
+          database: "testdb",
+          port: 5342
+        ]
+        Application.put_env(:ecto, Blog.Repo, config)
+        assert Blog.Repo.conf == config
+      end
+    end
+```
+
+This tests that the application uses the config specified by `Application.put_env`. To make this test pass, we can do replace the contents of `lib/blog/repo.ex` with:
+
+```elixir
+defmodule Blog.Repo do
+  use Ecto.Repo, adapter: Ecto.Adapters.Postgres
+  require Logger
+
+  def conf do
+    Application.get_env(:ecto, Blog.Repo)
+  end
+
+  def priv do
+    app_dir(:blog, "priv/repo")
+  end
+end
+```
+
+### Mix configuration
+
+You may be wondering what `Application.get_env` does. Phoenix utilizes the `Mix.Config` module to define the config for the Application. If you look inside the `config` directory then you will see a number of files. We are going to add a new file for configuring the database. We will call this file `database.exs`
+
+```elixir
+use Mix.Config
+
+config :ecto, Blog.Repo,
+  username: "user",
+  password: "password",
+  hostname: "localhost",
+  port: 5432,
+  database: "blog_development"
+```
+
+The `config` function we use here comes from [Mix.Config](http://elixir-lang.org/docs/stable/mix/Mix.Config.html#config/3) where `:ecto` is the application, `Blog.Repo` is the key and the rest is a keyword list of options. The keys match to the config that Ecto expects to be returned from the `conf` function.
+
+Even though we have added this file, we still need to include it. You will remember earlier that we said that the location of the database should be up to the developer. To ensure this is the case, we don't actually want this `database.exs` file to exist in the repository. What we will do instead is create a copy of it that we expect to developer to copy back to `database.exs` we will then remove `database.exs` from version control so that we don't expose our database credentials to the world.
+
+1) Make a copy of database.exs `cp database.exs database.exs.example`
+2) Add database.exs to .gitignore file `echo "config/database.exs" >> .gitignore`
+
+The last thing we need to do is load our new `database.exs` file into the config. Add the following to the bottom of `config/config.exs`
+
+```elixir
+import_config "database.exs"
+```
+
+The database can now be created by running `mix ecto.create`
+
+### Starting a repository
+
+In order to use an Ecto repository, it needs to be started. We want to ensure that when our web application is running, Ecto is running. To do this we add it to our supervision tree. Update `lib/blog.ex` to the following:
+
+```elixir
+defmodule Blog do
+  use Application
+
+  # See http://elixir-lang.org/docs/stable/elixir/Application.html
+  # for more information on OTP Applications
+  def start(_type, _args) do
+    import Supervisor.Spec, warn: false
+
+    children = [
+      worker(Blog.Repo, [])
+    ]
+
+    # See http://elixir-lang.org/docs/stable/elixir/Supervisor.html
+    # for other strategies and supported options
+    opts = [strategy: :one_for_one, name: Blog.Supervisor]
+    Supervisor.start_link(children, opts)
+  end
+end
+```
+
+The code changes in this commit can be seen at https://github.com/Gazler/elixir-blog/commit/feb75c387b7e44908cdb94c8ea0f6926fea59ce5
