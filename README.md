@@ -1,5 +1,7 @@
 # Blog Tutorial
 
+Please note that this was written for a much older version of Phoenix. While some of the concepts may apply, it is worth using this in tandem with [the official docs](http://www.phoenixframework.org/docs/overview).
+
 ## Getting Phoenix
 
 Since the blog application is built using the [Phoenix framework](https://github.com/phoenixframework/phoenix), the first step is to generate a new Phoenix application.
